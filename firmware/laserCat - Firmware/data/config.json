@@ -1,0 +1,11 @@
+{
+    "using_congfig_file":true,
+    "device_id":0,
+    "device_name":"LaserCat",
+
+    "version":"0.1",
+    "ap_ssid":"LaserCat",
+    "ap_ip":"10.0.1.1",
+    "ap_gateway":"10.0.1.1",
+    "ap_mask":"255.255.255.0"
+}

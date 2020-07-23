@@ -6,8 +6,6 @@
 #include <WiFiUdp.h>
 #include <OSCMessage.h>
 #include <ESP8266WiFi.h>
- #include <WiFiClientSecure.h>
-#include <UniversalTelegramBot.h>
 
 #include <headers.h>
 //OTA related libraries
@@ -61,24 +59,10 @@ struct Config {
     //Sequences
     char osc_sequence_path[sizeof(osc_path) + 8];
     int sequence_playing;
-    bool asinc_sequence_trigger = false;
-
-    //Telegram
-    char telegram_admin_id[16];
-    unsigned int telegram_polling_timer;
-
 };
 
 Config config;                         // <- global configuration object
 const char compile_date[] = __DATE__ " " __TIME__;
-
-//Telegram stuff
-#define BOTtoken "1255453417:AAFElcyctiVbEg9fFCum-PAHgUvWQQLR0rg"  // your Bot Token (Get from Botfather)
-#define BOTname "LaserCat"
-#define BOTusername "LaserCatBot"
-WiFiClientSecure client; //For ESP8266 boards
-UniversalTelegramBot bot(BOTtoken, client);
-unsigned int botLastPollingTimer = 0;
 
 //Servos
 #define PIN_SERVO_PAN 14  //D5
@@ -219,9 +203,7 @@ void triggerSequence(int sequenceID, int pause=500) {
 void stopSequence(){
   if(config.sequence_playing) {triggerSequence(0);}
 }
-void checkAsincSequenceTrigger(){
-  if (asinc_sequence_trigger) {triggerSequence}
-}
+
 //Configuration Functions
 void printConfigFile(const char *filename) {
   // Open file for reading
@@ -291,11 +273,6 @@ void loadConfiguration(const char *filename, Config &config) {
 
     config.osc_keep_alive_enable = doc["keep_alive_enable"] | 1;
     config.osc_keep_alive_timer = doc["keep_alive_timer"] | 1000;
-
-    //Telegram
-    strlcpy(config.telegram_admin_id, doc["telegram_admin_id"] | "Not Set", sizeof(config.telegram_admin_id));          
-    config.telegram_polling_timer = doc["telegram_polling_timer"] | 1000;
-
 }
 
 //OSC Sending functions
@@ -462,57 +439,11 @@ void checkTriggerButton(){
   }
 }
 
-//Telegram Functions
-void bot_setup() {
-  client.setInsecure(); // Required for ESP8266
-  const String commands = F("["
-    "{\"command\":\"help\",  \"description\":\"Get bot usage help\"},"
-    "{\"command\":\"start\", \"description\":\"Message sent when you open a chat with a bot\"},"
-    "{\"command\":\"status\",\"description\":\"Answer device current status\"},"
-    "{\"command\":\"play\",\"description\":\"Play random sequence\"}," 
-    "{\"command\":\"stop\",\"description\":\"Stop playing\"}"     // no comma on last command
-  "]");
-  bot.setMyCommands(commands);
-  
-  logger("Sending wake message on Telegram");
-  if (bot.sendMessage(config.telegram_admin_id, "*LaserCat* is Online!!!", "Markdown")) logger(" Sent OK");
-  else logger(" ERROR sending telegram message");
-}
-void pollTelegram(){
-   if (millis() > botLastPollingTimer + config.telegram_polling_timer)  {
-    String answer;
-    int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
-
-    for (int i = 0; i < numNewMessages; i++) {
-      telegramMessage &msg = bot.messages[i];
-      logger("Received " + msg.text + " from  " + msg.from_name + " with ID  " + msg.chat_id);
-      if      (msg.text == "/help") answer = "So you need _help_, uh? me too! use /start or /status";
-      else if (msg.text == "/start") answer = "Welcome my new friend! You are the first *" + msg.from_name + "* I've ever met";
-      else if (msg.text == "/status") answer = String("Status Report:") + 
-                                               String("\n  *-Laser:*   ") + String(config.osc_laser_enable) + 
-                                               String("\n  *-Sequence: ") + String(config.sequence_playing);
-      else if (msg.text == "/play") {
-        answer = String("Playing Random Sequence");
-        triggerSequence(2);
-      }
-      else if (msg.text == "/stop") {
-        answer = String("Stopping sequence");
-        stopSequence();
-      }
-      else answer = "Say what?";
-      bot.sendMessage(msg.chat_id, answer, "Markdown");
-    }
-
-    botLastPollingTimer = millis();
-  }
-}
-
+//Other Functions
 void regularChecks(){
   ArduinoOTA.handle();
   oscCheckForMsg();
   checkTriggerButton();
-  pollTelegram();
-  checkAsincSequenceTrigger();
 }
 
 void setup() {
@@ -596,33 +527,13 @@ void setup() {
   //Servo stuff
   analogWrite(PIN_SERVO_PAN, 512);
   analogWrite(PIN_SERVO_TILT, 512);
-  analogWriteFreq(100);  /* Set PWM frequency to 50Hz */
+  analogWriteFreq(50);  /* Set PWM frequency to 50Hz */
 
   printOscPaths();
-
-  logger("  Telegram Admin ID: " + String(config.telegram_admin_id));
-  bot_setup();
 
   blinkLaser();
   logger("-------Setup Finished-------");
 }
-
-void scanAll(bool laser = true, int pause = 10) {
-  digitalWrite(PIN_LASER, laser);
-  for (uint8 angle = 0; angle < 180; angle++) {
-    movePT(angle, angle, 100);
-    delay(pause);
-    regularChecks();
-  }
-
-  for (uint8 angle = 180; angle > 0; angle--) {
-    movePT(angle, angle, 100);
-    delay(pause);
-    regularChecks();
-  }
-}
-
-
 
 void loop() {
   regularChecks();
@@ -634,7 +545,4 @@ void loop() {
     keepAliveToggle = !keepAliveToggle;
     previousLoopTimer = millis();
   }
-
-  //scanAll(true, 100);
-  //blinkLaser();
 }

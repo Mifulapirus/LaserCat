@@ -28,8 +28,5 @@
     "pt_y_path":"/y",
     "pt_xy_path":"/xy",
 
-    "sequence_path":"/seq",
-
-    "telegram_admin_id":"17186779",
-    "telegram_polling_timer":1000
+    "sequence_path":"/seq"
 }

@@ -7,5 +7,29 @@
     "ap_ssid":"LaserCat",
     "ap_ip":"10.0.1.1",
     "ap_gateway":"10.0.1.1",
-    "ap_mask":"255.255.255.0"
+    "ap_mask":"255.255.255.0",
+
+    "server_ip":"192.168.1.100",
+    "port_out":9000,
+    "port_in":8000,
+
+    "osc_path":"/laserCat",
+    "osc_timer_path":"/timer",
+    "osc_enable_path":"/enable",
+
+    "keep_alive_path":"/keepAlive",
+    "keep_alive_enable":1,
+    "keep_alive_timer":500,
+
+    "laser_path":"/laser",
+
+    "pt_path":"/pt",
+    "pt_x_path":"/x",
+    "pt_y_path":"/y",
+    "pt_xy_path":"/xy",
+
+    "sequence_path":"/seq",
+
+    "telegram_admin_id":"17186779",
+    "telegram_polling_timer":1000
 }

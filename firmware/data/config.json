@@ -19,7 +19,7 @@
 
     "keep_alive_path":"/keepAlive",
     "keep_alive_enable":1,
-    "keep_alive_timer":500,
+    "keep_alive_timer":5000,
 
     "laser_path":"/laser",
 
@@ -28,5 +28,9 @@
     "pt_y_path":"/y",
     "pt_xy_path":"/xy",
 
-    "sequence_path":"/seq"
+    "sequence_path":"/seq",
+
+    "mqtt_server":"192.168.0.11",
+    "mqtt_keep_alive_topic":"ka",
+    "mqtt_sequence_topic:":"sq"
 }

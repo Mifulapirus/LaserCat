@@ -6,6 +6,8 @@
 #include <WiFiUdp.h>
 #include <OSCMessage.h>
 #include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+
 
 #include <headers.h>
 //OTA related libraries
@@ -59,6 +61,11 @@ struct Config {
     //Sequences
     char osc_sequence_path[sizeof(osc_path) + 8];
     int sequence_playing;
+
+    //MQTT
+    char mqtt_server[30];
+    char mqtt_keep_alive_topic[8];
+    char mqtt_sequence_topic[8];
 };
 
 Config config;                         // <- global configuration object
@@ -91,6 +98,12 @@ bool keepAliveToggle = false;
 
 //Timers
 unsigned long previousLoopTimer;
+
+//MQTT
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+//***************Functions****************
 
 //Laser stuff
 void laser(bool _state){
@@ -136,7 +149,7 @@ void movePT (uint8 _pan, uint8 _tilt, uint8 _delay) {
 }
 void triggerSequence(int sequenceID, int pause=500) {
   uint8 moveDelay = 100;
-  //logger("Trigger sequence initiated with ID: " + String(sequenceID));
+  logger("Trigger sequence initiated with ID: " + String(sequenceID));
 
   if (config.sequence_playing == sequenceID) {
     //logger("  Sequence " + String(sequenceID) + " is already playing");
@@ -186,7 +199,7 @@ void triggerSequence(int sequenceID, int pause=500) {
       logger("  Sequence 2 - Started");
       while(config.sequence_playing == 2){
         laser(ON);
-        movePT(random(0, 100), random(80, 160), random(70, 130));
+        movePT(random(0, 180), random(0, 180), random(50, 130));
         blinkLaser();
       }
 
@@ -273,6 +286,11 @@ void loadConfiguration(const char *filename, Config &config) {
 
     config.osc_keep_alive_enable = doc["keep_alive_enable"] | 1;
     config.osc_keep_alive_timer = doc["keep_alive_timer"] | 1000;
+
+    //MQTT
+    strlcpy(config.mqtt_server, doc["mqtt_server"] | "broker.mqtt-dashboard.com", sizeof(config.mqtt_server));
+    strlcpy(config.mqtt_keep_alive_topic, doc["mqtt_keep_alive_topic"] | "ka", sizeof(config.mqtt_keep_alive_topic));
+    strlcpy(config.mqtt_sequence_topic, doc["mqtt_sequence_topic"] | "sq", sizeof(config.mqtt_sequence_topic));
 }
 
 //OSC Sending functions
@@ -439,11 +457,69 @@ void checkTriggerButton(){
   }
 }
 
+//MQTT Functions
+void callbackMQTT(char* topic, byte* payload, unsigned int length) {
+  logger("MQTT Message arrived on topic: " + String(topic));
+  
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)payload[i]);
+  }
+  Serial.println();
+
+  //Trigger a sequence or stop it
+  if ((char)payload[0] == '0') {
+    logger("sq received a 0");
+    stopSequence(); 
+  }
+
+  else {
+    //logger("sq received" + (char)payload);
+    triggerSequence(payload[0] - '0');
+  }
+}
+
+void connectMQTT() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Create a random client ID
+    String clientId = "ESP8266Client- LASERCAT";
+
+    // Attempt to connect
+    if (client.connect(clientId.c_str(), "mqtt", "mqtt")) {
+      Serial.println("connected");
+      // Once connected, publish an announcement...
+      //client.publish(config.mqtt_keep_alive_topic, "hello world");
+      // ... and resubscribe
+      //client.subscribe("inTopic");
+      client.subscribe(config.mqtt_sequence_topic);
+    } 
+    
+    else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
 //Other Functions
 void regularChecks(){
   ArduinoOTA.handle();
   oscCheckForMsg();
   checkTriggerButton();
+  if (!client.connected()) connectMQTT();
+  client.loop();
+
+  //Keep Alive update
+  if (config.osc_keep_alive_enable && 
+      (millis() > (previousLoopTimer + config.osc_keep_alive_timer))) {
+    oscSendKeepAlive();  //Send Keep alive periodically
+    client.publish(config.mqtt_keep_alive_topic, "on");
+    keepAliveToggle = !keepAliveToggle;
+    previousLoopTimer = millis();
+  }
 }
 
 void setup() {
@@ -531,6 +607,9 @@ void setup() {
 
   printOscPaths();
 
+  //MQTT stuff
+  client.setServer(config.mqtt_server, 1883);
+  client.setCallback(callbackMQTT);
   blinkLaser();
   logger("-------Setup Finished-------");
 }
@@ -538,11 +617,5 @@ void setup() {
 void loop() {
   regularChecks();
 
-  //Keep Alive update
-  if (config.osc_keep_alive_enable && 
-      (millis() > (previousLoopTimer + config.osc_keep_alive_timer))) {
-    oscSendKeepAlive();  //Send Keep alive periodically
-    keepAliveToggle = !keepAliveToggle;
-    previousLoopTimer = millis();
-  }
+
 }

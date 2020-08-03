@@ -7,17 +7,31 @@
 #include <OSCMessage.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
-
-
 #include <headers.h>
+
 //OTA related libraries
 #include <ESP8266mDNS.h>
 #include <ArduinoOTA.h>
 
-
 //General variables
-#define ON 1
-#define OFF 0
+  #define ON 1
+  #define OFF 0 
+
+//Servos
+#define PIN_SERVO_PAN D5
+#define PIN_SERVO_TILT D6
+#define DUTY_MIN 20
+#define DUTY_MAX 250
+#define SERVO_PAN_ID 0
+#define SERVO_TILT_ID 1
+uint8 servoPinList[2] = {PIN_SERVO_PAN, PIN_SERVO_TILT};
+
+//Laser
+#define PIN_LASER 13  //D7
+
+//Button
+#define PIN_BUT_TRIGGER_SEQUENCE D3
+bool previousButtonState = true;
 
 //Config stuff
 const char *configPath = "/config.json";  
@@ -61,36 +75,24 @@ struct Config {
     //Sequences
     char osc_sequence_path[sizeof(osc_path) + 8];
     int sequence_playing;
+    int sequence_x_min;
+    int sequence_x_max;
+    int sequence_y_min;
+    int sequence_y_max;
 
     //MQTT
     char mqtt_server[30];
     char mqtt_keep_alive_topic[8];
     char mqtt_sequence_topic[8];
 };
-
-Config config;                         // <- global configuration object
+Config config;                         
 const char compile_date[] = __DATE__ " " __TIME__;
-
-//Servos
-#define PIN_SERVO_PAN 14  //D5
-#define PIN_SERVO_TILT 12 //D6
-#define DUTY_MIN 20
-#define DUTY_MAX 250
-#define SERVO_PAN_ID 0
-#define SERVO_TILT_ID 1
-
-uint8 servoPinList[2] = {PIN_SERVO_PAN, PIN_SERVO_TILT};
-
-//Laser
-#define PIN_LASER 13  //D7
-
-//Button
-#define PIN_BUT_TRIGGER_SEQUENCE 0
-bool previousButtonState = true;
 
 //WiFi
 WiFiUDP udp;
 IPAddress broadcastIP;
+#define CLEAR_WIFI_SETTINGS false  //Change this to restore the WiFi Settings
+
 
 //OSC stuff
 OSCErrorCode error;
@@ -103,14 +105,25 @@ unsigned long previousLoopTimer;
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-//***************Functions****************
-
-//Laser stuff
+/********TURRET RELATED FUNCTIONS ***********/
+/*FUNCTION: Turns Laser on and off
+  - ARGS: 
+    -- bool state
+  - RETURN: 
+    -- void 
+*/
 void laser(bool _state){
   digitalWrite(PIN_LASER, _state);
   config.osc_laser_enable = _state;
 }
-void blinkLaser(int repetitions=3, int pause=100){
+/*FUNCTION: Toggles the laser a number of times with specific intervals
+  - ARGS: 
+    -- uint8 repetitions: Number of times to blink
+    -- uint8 pause: Pause between states
+  - RETURN: 
+    -- void 
+*/
+void blinkLaser(uint8 repetitions=3, uint8 pause=100){
   for(int i=0; i<repetitions; i++) {
     laser(ON);
     delay(pause);
@@ -118,18 +131,30 @@ void blinkLaser(int repetitions=3, int pause=100){
     delay(pause);
   }
 }
+/*FUNCTION: Moves the specified servo to a given degree
+  - ARGS: 
+    -- uint8 servoID: ID of the servo to move. in general just 0 (pan) or 1 (tilt)
+    -- uint8 position: Position to move in degrees (0 - 180)
 
-//Servo Functions
+  - NOTES: 
+    -- This function calls regularChecks()
+*/
 void moveServo (uint8 servoID, uint8 position){
-  //convert 0-180 to duty
-  uint16_t posDuty = map(position, 0, 180, DUTY_MIN, DUTY_MAX);
-  //Move Servo to that position
-  analogWrite(servoPinList[servoID], posDuty); 
-  if (servoID == SERVO_PAN_ID) {config.osc_pt_x = position;}
+  uint16_t posDuty = map(position, 0, 180, DUTY_MIN, DUTY_MAX); //Convert degrees to duty
+  analogWrite(servoPinList[servoID], posDuty);  //Move the servo with the calculated duty 
+  //Update position variables for later reporting
+  if (servoID == SERVO_PAN_ID) {config.osc_pt_x = position;} 
   else if (servoID == SERVO_TILT_ID) {config.osc_pt_y = position;}
+  //report position via OSC
   oscSendPT();
-  regularChecks();
+  regularChecks();  //Since moving a servo is something we do very frequently, we want to make sure this function allows for some regular checks
 }
+/*FUNCTION: Moves both servos at a given speed
+  - ARGS: 
+    -- uint8 pan: position of the PAN servo in degrees (0 - 180)
+    -- uint8 tilt: position of the TILT servo in degrees (0 - 180)
+    -- uint8 delay: pause between each moving step. This slows down and smothes the movements
+*/
 void movePT (uint8 _pan, uint8 _tilt, uint8 _delay) {
   logger("Moving PT @ " + String(_delay) + "ms per step");
   int pDelta = config.osc_pt_x - _pan;
@@ -147,6 +172,13 @@ void movePT (uint8 _pan, uint8 _tilt, uint8 _delay) {
     delay(_delay);
   }
 }
+/*FUNCTION: Initiates a specific sequence
+  - ARGS: 
+    -- int sequenceID: ID of the sequence to be triggered
+    -- int pause: Pause in between sequence steps
+  - NOTES:
+    -- You can define your own sequences of P&T and Laser here
+*/ 
 void triggerSequence(int sequenceID, int pause=500) {
   uint8 moveDelay = 100;
   logger("Trigger sequence initiated with ID: " + String(sequenceID));
@@ -197,9 +229,26 @@ void triggerSequence(int sequenceID, int pause=500) {
 
     else if (sequenceID == 2){
       logger("  Sequence 2 - Started");
+      movePT(config.sequence_x_min, config.sequence_y_min, 5);
+      blinkLaser();
+      delay(500);
+
+      movePT(config.sequence_x_max, config.sequence_y_min, 5);
+      blinkLaser();
+      delay(500);
+
+      movePT(config.sequence_x_max, config.sequence_y_max, 5);
+      blinkLaser();
+      delay(500);
+
+      movePT(config.sequence_x_min, config.sequence_y_max, 5);
+      blinkLaser();
+      delay(500);
+
       while(config.sequence_playing == 2){
         laser(ON);
-        movePT(random(0, 180), random(0, 180), random(50, 130));
+        delay(random(500, 3000));
+        movePT(random(config.sequence_x_min, config.sequence_x_max), random(config.sequence_y_min, config.sequence_y_max), random(30, 130));
         blinkLaser();
       }
 
@@ -217,21 +266,27 @@ void stopSequence(){
   if(config.sequence_playing) {triggerSequence(0);}
 }
 
-//Configuration Functions
+/******* CONFIGURATION FUNCTIONS **********/
 void printConfigFile(const char *filename) {
-  // Open file for reading
   File file = SPIFFS.open(filename, "r");
   if (!file) {
     logger(F("Failed to read file"));
     return;
   }
 
-  // Extract each characters by one by one
   while (file.available()) logger(file.readString());
   file.close();
 }
-void loadConfiguration(const char *filename, Config &config) {
-    File file = SPIFFS.open(filename, "r");
+/*FUNCTION: Loads the information contained in configuration file into its corresponding variables.
+            In case there is no configuration files, or a specific variable is not found in it, 
+            a default value will be loaded.
+  - ARGS: 
+    -- const char *fileName: Pointer to the file containing the configuration json data.
+                              This file must be uploaded separately using SPIFFS. See data/config.json
+    -- Config &config: Address pointing to the configuration object defined at the beginning.
+*/
+void loadConfiguration(const char *fileName, Config &config) {
+    File file = SPIFFS.open(fileName, "r");
     StaticJsonDocument<1024> doc;
 
     // Deserialize the JSON document
@@ -283,6 +338,10 @@ void loadConfiguration(const char *filename, Config &config) {
     //Sequence Paths
     strlcpy(config.osc_sequence_path, config.osc_path, sizeof(config.osc_sequence_path));
       strlcat(config.osc_sequence_path, doc["sequence_path"] | "/seq", sizeof(config.osc_sequence_path));
+    config.sequence_x_min = doc["sequence_x_min"] | 0;
+    config.sequence_x_max = doc["sequence_x_max"] | 180;
+    config.sequence_y_min = doc["sequence_y_min"] | 0;
+    config.sequence_y_max = doc["sequence_y_max"] | 180;
 
     config.osc_keep_alive_enable = doc["keep_alive_enable"] | 1;
     config.osc_keep_alive_timer = doc["keep_alive_timer"] | 1000;
@@ -293,7 +352,7 @@ void loadConfiguration(const char *filename, Config &config) {
     strlcpy(config.mqtt_sequence_topic, doc["mqtt_sequence_topic"] | "sq", sizeof(config.mqtt_sequence_topic));
 }
 
-//OSC Sending functions
+/******** OSC FUNCTIONS ********/
 void oscSend(char path[30], double value){
     OSCMessage oscSender(path);
     oscSender.add(value);
@@ -302,8 +361,6 @@ void oscSend(char path[30], double value){
     if (udp.endPacket() != 1)     logger(" Warning 21: OSC Sending Message Failed");
     oscSender.empty();
 }
-
-// OSC Functions
 void printOscPaths() {
   char paths[sizeof(config)+(30*7)+(10*38)];
   strcpy(paths, ("\nGeneral OSC paths:\n "));
@@ -332,7 +389,6 @@ void printOscPaths() {
   logger(paths);
 }
 
-//Keep Alive related functions
 void oscKeepAlive(OSCMessage &msg) {  //Response to incoming keep alive
   int ka = (int)msg.getFloat(0);
 }
@@ -347,7 +403,6 @@ void oscSetKeepaliveTimer(OSCMessage &msg) {
   logger("Keep Alive timer set to: " + String(config.osc_keep_alive_timer));
 } 
 
-//Laser related Functions
 void oscEnableLaser(OSCMessage &msg) {
   stopSequence();
   config.osc_laser_enable = msg.getInt(0);
@@ -358,7 +413,6 @@ void oscSendLaser() {
   oscSend(config.osc_laser_path, digitalRead(PIN_LASER));
 }
 
-//PT OSC functions
 void oscSetPTx(OSCMessage &msg) {
   stopSequence();
   config.osc_pt_x = msg.getInt(0);
@@ -384,14 +438,12 @@ void oscSendPT(){
     oscSend(config.osc_pt_y_path, config.osc_pt_y);
 }
 
-//Sequence Functions
 void oscTriggerSequence(OSCMessage &msg) {
   int seq = msg.getInt(0);
   logger("Triggering Sequence via OSC: " + String(seq));
   triggerSequence(seq, 1000);
 }
 
-//OSC Receiving functions
 void processOSC(OSCMessage &msg){
   char address[30];
   msg.getAddress(address);
@@ -432,18 +484,13 @@ void oscCheckForMsg(){
   }
 }
 
-//Button Functions
+/******** BUTTON FUNCTIONS ********/
 void checkTriggerButton(){
   bool currentButtonState = digitalRead(PIN_BUT_TRIGGER_SEQUENCE);
- 
-  if (currentButtonState != previousButtonState) {  //Button changed states
-    logger("  Previous: " + String(previousButtonState));
-    logger("  Current:  " + String(currentButtonState));
-    logger("    Different!");  
+  if (currentButtonState != previousButtonState) {  //Only act on state change
     previousButtonState = currentButtonState;
-
-    if (!currentButtonState) {
-      logger("      Button is LOW");
+    if (!currentButtonState) {  //Button press detected
+      logger("      Button has been pressed");
       if (config.sequence_playing == 0) {
         logger("Trigger button has been pressed - STARTING SEQUENCE");
         triggerSequence(2);
@@ -457,41 +504,30 @@ void checkTriggerButton(){
   }
 }
 
-//MQTT Functions
+/******** MQTT FUNCTIONS ********/
 void callbackMQTT(char* topic, byte* payload, unsigned int length) {
-  logger("MQTT Message arrived on topic: " + String(topic));
-  
-  for (int i = 0; i < length; i++) {
-    Serial.print((char)payload[i]);
-  }
+  logger("MQTT Message arrived on subscribed topic: " + String(topic));
+  for (int i = 0; i < length; i++) Serial.print((char)payload[i]);
   Serial.println();
 
-  //Trigger a sequence or stop it
-  if ((char)payload[0] == '0') {
+  if ((char)payload[0] == '0') {  //If payload is a '0', Stop the sequence
     logger("sq received a 0");
     stopSequence(); 
   }
 
-  else {
-    //logger("sq received" + (char)payload);
+  else {  //If payload is not '0', use payload as a Sequence ID and trigger the corresponding sequence
     triggerSequence(payload[0] - '0');
   }
 }
-
 void connectMQTT() {
-  // Loop until we're reconnected
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
-    // Create a random client ID
     String clientId = "ESP8266Client- LASERCAT";
 
-    // Attempt to connect
+    // Attempt to connect and subscribe
     if (client.connect(clientId.c_str(), "mqtt", "mqtt")) {
       Serial.println("connected");
-      // Once connected, publish an announcement...
-      //client.publish(config.mqtt_keep_alive_topic, "hello world");
-      // ... and resubscribe
-      //client.subscribe("inTopic");
+      client.publish(config.mqtt_keep_alive_topic, "on");
       client.subscribe(config.mqtt_sequence_topic);
     } 
     
@@ -504,7 +540,8 @@ void connectMQTT() {
     }
   }
 }
-//Other Functions
+
+/******** OTHER FUNCTIONS ********/
 void regularChecks(){
   ArduinoOTA.handle();
   oscCheckForMsg();
@@ -521,9 +558,10 @@ void regularChecks(){
     previousLoopTimer = millis();
   }
 }
-
 void setup() {
   Serial.begin(115200);
+  
+  //Pin setup
   pinMode(PIN_LASER, OUTPUT);
   pinMode(PIN_SERVO_PAN, OUTPUT);
   pinMode(PIN_SERVO_TILT, OUTPUT);
@@ -533,17 +571,16 @@ void setup() {
   if (SPIFFS.begin()) logger("FS mounted at setup");
   else logger("Error mounting FS at setup");
 
+  //Log initialization
   logger("\n\n      -----------START----------");
   logger("| Compilation Date:      |");
   logger(compile_date);
   logger("|        OTA Active      |");
   logger("|          Setup         |");
-
-  //Logger status
   logger("  Initialize Current Log file: " + String(clearCurrentLogFile()));
 
-  //Load config
-  logger(F("  Print config file..."));
+  //Load configuration
+  logger(F("  Contents of the config file:"));
   printConfigFile(configPath);
   logger(F("  Loading configuration..."));
   loadConfiguration(configPath, config);
@@ -551,24 +588,26 @@ void setup() {
   //WiFiManager
   WiFiManager wifiManager;
   
-  //reset saved settings
-  //wifiManager.resetSettings();
+ //Reset saved settings if needed
+  if (CLEAR_WIFI_SETTINGS) {
+    logger("Wifi settings have been cleared!");
+    wifiManager.resetSettings();
+  }
   
-  //set custom ip for portal
+  //Custom ip for portal setup
   IPAddress ip, gw, mask;
   ip.fromString(config.ap_ip);
   gw.fromString(String(config.ap_gateway));
   mask.fromString(String(config.ap_mask));
-  
   wifiManager.setAPStaticIPConfig(ip, gw, mask);
 
-  //fetches ssid and pass from eeprom and tries to connect
+  //Fetches ssid and pass from eeprom and tries to connect
   //if it does not connect it starts an access point with the specified name
   //here  "AutoConnectAP"
   //and goes into a blocking loop awaiting configuration
   wifiManager.autoConnect(config.ap_ssid);
 
-
+  //Logs the WiFi connection results
   logger("  " + String(config.device_name) + ": " + String(config.version));
   logger("  Hardware MAC: " + String(WiFi.macAddress()));
   logger("  Software MAC: " + WiFi.softAPmacAddress());
@@ -576,19 +615,18 @@ void setup() {
   broadcastIP = WiFi.localIP();
   broadcastIP[3] = 255;
   logger("  Broadcast IP: " + broadcastIP.toString());
-    
+  
+  //Initiate OSC port
   udp.begin(config.osc_port_in);
   logger("  OSC Listening on port: " + String(config.osc_port_in));
+  printOscPaths();
+
   //OTA stuff
   ArduinoOTA.setHostname(config.device_name);
   logger("  Hostname: " + ArduinoOTA.getHostname());
-
   ArduinoOTA.onStart([]() {logger("\n*************************\n****** OTA STARTED ******");});
-
   ArduinoOTA.onEnd([]() {logger("\n*************************\n****** OTA FINISHED ******");});
-
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {Serial.printf("*** OTA Progress: %u%%\r", (progress / (total / 100)));});
-  
   ArduinoOTA.onError([](ota_error_t error) {
     Serial.printf("OTA Error[%u]: \n", error);
     if (error == OTA_AUTH_ERROR) logger("OTA Error: Auth Failed");
@@ -597,25 +635,21 @@ void setup() {
     else if (error == OTA_RECEIVE_ERROR) logger("OTA Error: Receive Failed");
     else if (error == OTA_END_ERROR) logger("OTA Error: End Failed");
   });
-
   ArduinoOTA.begin();
 
-  //Servo stuff
+  //Initialize Servos
   analogWrite(PIN_SERVO_PAN, 512);
   analogWrite(PIN_SERVO_TILT, 512);
   analogWriteFreq(50);  /* Set PWM frequency to 50Hz */
 
-  printOscPaths();
-
-  //MQTT stuff
+  //Initialize MQTT client
   client.setServer(config.mqtt_server, 1883);
   client.setCallback(callbackMQTT);
+  
+  //Finish setup
   blinkLaser();
   logger("-------Setup Finished-------");
 }
-
 void loop() {
   regularChecks();
-
-
 }
